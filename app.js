@@ -12,6 +12,7 @@ import { firebaseConfig } from './config.js';
 import {
   summary, transfers, balances, pendingOf, displayCode, normalizeCode, itemName, expenseTitle, money,
   parseTrip, parseExpense, parseItem, parseInbox, sortItems, paidBy, isBought,
+  resolve, repaidOf, repaidTag, repaidLine,
 } from './logic.js';
 
 // ---------- Firebase ----------
@@ -103,6 +104,38 @@ const Cloud = {
     await addDoc(sub(tripId, 'inbox'), {
       byUid: uid, memberId: myMemberId, memberName: myName, forMemberId: item.memberId,
       itemId: item.id, type: 'unbuy', title: item.name, amount: 0, method: 'CASH', at: Date.now(),
+    });
+  },
+  helperRepay: async (tripId, item, myName, repayMethod) => {
+    const uid = auth.currentUser.uid;
+    const entry = Object.entries(item.helpers || {}).find(([, h]) => h.status === 'PAID');
+    if (!entry) return;
+    const [hUid, h] = entry;
+    await updateDoc(doc(db, 'trips', tripId, 'shopping', item.id),
+      new FieldPath('helpers', hUid), {
+        name: h.name, status: 'PAID', amount: h.amount, method: h.method, memberId: h.memberId,
+        repaid: true, repaidMethod: repayMethod,
+      }, 'updatedAt', Date.now());
+    await addDoc(sub(tripId, 'inbox'), {
+      byUid: uid, memberId: h.memberId, memberName: myName, forMemberId: item.memberId,
+      itemId: item.id, type: 'repay', title: expenseTitle(item.name, item.qty),
+      amount: h.amount, method: repayMethod, at: Date.now(),
+    });
+  },
+  helperUnrepay: async (tripId, item, myName) => {
+    const uid = auth.currentUser.uid;
+    const entry = Object.entries(item.helpers || {}).find(([, h]) => h.status === 'PAID');
+    if (!entry) return;
+    const [hUid, h] = entry;
+    await updateDoc(doc(db, 'trips', tripId, 'shopping', item.id),
+      new FieldPath('helpers', hUid), {
+        name: h.name, status: 'PAID', amount: h.amount, method: h.method, memberId: h.memberId,
+        repaid: false, repaidMethod: '',
+      }, 'updatedAt', Date.now());
+    await addDoc(sub(tripId, 'inbox'), {
+      byUid: uid, memberId: h.memberId, memberName: myName, forMemberId: item.memberId,
+      itemId: item.id, type: 'unrepay', title: expenseTitle(item.name, item.qty),
+      amount: h.amount, method: h.method, at: Date.now(),
     });
   },
   lookupInvite: async code => {
@@ -330,7 +363,7 @@ function mountShopping(container, ctx) {
     if (!me) { list.innerHTML = `<div class="muted">讀取中…</div>`; return; }
     const uid = auth.currentUser?.uid;
     const members = S.trip?.members || [];
-    const sum = summary(me.memberId, members, S.expenses, pendingOf(S.inbox));
+    const sum = summary(me.memberId, members, S.expenses, pendingOf(S.inbox), repaidOf(S.items));
     const mine = S.items.filter(i => i.memberId === me.memberId);
     const shown = sortItems(filter === 'me' ? mine : filter === 'all' ? S.items : S.items.filter(i => i.memberId === filter), me.memberId);
     const others = members.filter(m => m.id !== me.memberId);
@@ -352,15 +385,24 @@ function mountShopping(container, ctx) {
           <div class="iname ${bought ? 'done' : ''}">${esc(it.qty > 1 ? `${it.name} ×${it.qty}` : it.name)}</div>
           ${own ? '' : `<div class="muted small">${esc(it.memberName)} 要的</div>`}
           ${it.note.trim() ? `<div class="muted small">${esc(it.note)}</div>` : ''}
-          ${pb ? `<div class="paid">💰 ${myHelp === 'PAID' ? '我' : esc(pb.name)} 幫${own ? '你' : esc(it.memberName)}買了 ${money(pb.amount, cur)}（${pb.method === 'CASH' ? '現金' : '信用卡'}）· 分帳自動算</div>` : ''}
+          ${pb ? `<div class="paid">💰 ${myHelp === 'PAID' ? '我' : esc(pb.name)} 幫${own ? '你' : esc(it.memberName)}買了 ${money(pb.amount, cur)}（${pb.method === 'CASH' ? '現金' : '信用卡'}）${pb.repaid ? ' · ' + repaidTag(pb.repaidMethod) : ' · 分帳自動算'}</div>` : ''}
           ${it.done && !pb && it.amount > 0 ? `<div class="paid">${it.method === 'CASH' ? `現金 ${money(it.amount, cur)}${own ? ' · 已扣剩餘現金' : ''}` : `信用卡 ${money(it.amount, cur)}`}</div>` : ''}
           ${helpers}
         </div>
-        ${!own && myHelp === 'PAID' ? `<div class="tags"><button class="tag" data-payfor="${esc(it.id)}">取消幫買</button></div>`
-        : !own && !bought ? `<div class="tags">
+        ${(() => {
+          const canRepay = !!pb && (ctx.canEditAll || own || myHelp === 'PAID');
+          if (canRepay) {
+            return `<div class="tags">${pb.repaid
+              ? `<button class="tag" data-unrepay="${esc(it.id)}">取消已還</button>`
+              : `<button class="tag" data-repay="${esc(it.id)}">已當場還錢</button>`}
+              ${myHelp === 'PAID' ? `<button class="tag" data-payfor="${esc(it.id)}">取消幫買</button>` : ''}</div>`;
+          }
+          if (!own && !bought) return `<div class="tags">
           <button class="tag ${myHelp === 'FIND' ? 'on' : ''}" data-help="FIND" data-id="${esc(it.id)}">我幫你找</button>
           <button class="tag ${myHelp === 'SEEN' ? 'on' : ''}" data-help="SEEN" data-id="${esc(it.id)}">我看到了</button>
-          <button class="tag" data-payfor="${esc(it.id)}">我幫你買</button></div>` : ''}
+          <button class="tag" data-payfor="${esc(it.id)}">我幫你買</button></div>`;
+          return '';
+        })()}
       </div>`;
     }
     list.innerHTML = `
@@ -393,6 +435,14 @@ function mountShopping(container, ctx) {
       ev.stopPropagation(); const it = byId(el.dataset.payfor); if (!it || busy) return;
       if (uid && it.helpers[uid]?.status === 'PAID') confirmHelperUntick(it, me);
       else boughtDialog(it, sum.remainingCash, cur, it.memberName, (a, m) => Cloud.helperBuy(ctx.tripId, it, me.memberId, me.name, expenseTitle(it.name, it.qty), a, m));
+    }));
+    list.querySelectorAll('[data-repay]').forEach(el => (el.onclick = ev => {
+      ev.stopPropagation(); const it = byId(el.dataset.repay); if (!it || busy) return;
+      repayDialog(it, me, cur);
+    }));
+    list.querySelectorAll('[data-unrepay]').forEach(el => (el.onclick = ev => {
+      ev.stopPropagation(); const it = byId(el.dataset.unrepay); if (!it || busy) return;
+      confirmUnrepay(it, me);
     }));
     list.querySelectorAll('[data-edit]').forEach(el => (el.onclick = () => {
       const it = byId(el.dataset.edit); if (!it) return;
@@ -434,6 +484,45 @@ function mountShopping(container, ctx) {
       <div class="btns"><button class="btn ghost" id="keep">保留</button><button class="btn peach" id="un">取消幫買</button></div></div>`, d => {
       d.querySelector('#keep').onclick = closeDialog;
       d.querySelector('#un').onclick = () => { closeDialog(); run(() => Cloud.helperUnbuy(ctx.tripId, item, me.memberId, me.name)); };
+    });
+  }
+
+  function repayDialog(item, me, cur) {
+    const pb = paidBy(item);
+    const a = pb && pb.memberId === me.memberId ? '你' : (pb?.name || '代墊的人');
+    const b = item.memberId === me.memberId ? '你' : item.memberName;
+    const amt = money(pb?.amount || item.amount, cur);
+    let method = 'CASH';
+    openDialog(`<div class="sheet">
+      <h2>已當場還錢？</h2>
+      <div>「${esc(item.name)}」${amt}，${esc(b)}已經還給${esc(a)}了？選還錢方式：</div>
+      <div class="pills" style="margin-top:10px"><button class="pill on" data-m="CASH">現金</button><button class="pill" data-m="TRANSFER">其他如轉帳</button></div>
+      <div id="hint"></div>
+      <div class="btns"><button class="btn ghost" id="cancel">取消</button><button class="btn" id="ok">已當場還錢</button></div>
+    </div>`, d => {
+      const hint = d.querySelector('#hint');
+      const upd = () => {
+        hint.innerHTML = method === 'CASH'
+          ? `<div style="color:var(--mintDeep);font-weight:700;font-size:13px">${esc(a)}的剩餘現金會加回，${esc(b)} 的剩餘現金會扣掉，分帳不再算欠款</div>`
+          : `<div class="muted">分帳不再算欠款。用轉帳還的話，兩人剩餘現金不變（當初付現的話，代墊的現金維持已扣）</div>`;
+        d.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === method));
+      };
+      d.querySelectorAll('[data-m]').forEach(el => (el.onclick = () => { method = el.dataset.m; upd(); }));
+      upd();
+      d.querySelector('#cancel').onclick = closeDialog;
+      d.querySelector('#ok').onclick = () => { closeDialog(); run(() => Cloud.helperRepay(ctx.tripId, item, me.name, method)); };
+    });
+  }
+
+  function confirmUnrepay(item, me) {
+    const pb = paidBy(item);
+    const a = pb && pb.memberId === me.memberId ? '你' : (pb?.name || '代墊的人');
+    const b = item.memberId === me.memberId ? '你' : item.memberName;
+    openDialog(`<div class="sheet"><h2>取消已還？</h2>
+      <div class="muted">會恢復成分帳裡${esc(b)}欠${esc(a)}，現金也改回去。</div>
+      <div class="btns"><button class="btn ghost" id="keep">保留</button><button class="btn peach" id="un">取消已還</button></div></div>`, d => {
+      d.querySelector('#keep').onclick = closeDialog;
+      d.querySelector('#un').onclick = () => { closeDialog(); run(() => Cloud.helperUnrepay(ctx.tripId, item, me.name)); };
     });
   }
 
@@ -544,7 +633,8 @@ async function viewCompanion(cloudId, tab) {
     const box = pane.querySelector('#mine'); if (!box || !S.trip) return;
     const members = S.trip.members, cur = S.trip.currency, ownerName = S.trip.ownerName || '主帳號';
     const nameOf = id => members.find(m => m.id === id)?.name || '?';
-    const sum = summary(j.memberId, members, S.expenses, pendingOf(S.inbox));
+    const repaid = repaidOf(S.items);
+    const sum = summary(j.memberId, members, S.expenses, pendingOf(S.inbox), repaid);
     const pay = sum.transfers.filter(t => t.fromId === j.memberId), get = sum.transfers.filter(t => t.toId === j.memberId);
     box.innerHTML = `
       <div class="hero">
@@ -556,13 +646,13 @@ async function viewCompanion(cloudId, tab) {
         ${get.map(t => `<div class="s">${esc(nameOf(t.fromId))} 要給你 ${money(t.amount, cur)}</div>`).join('')}
       </div>
       ${sum.pending.length ? `<div class="warn">等${esc(ownerName)}的手機記帳（打開旅伴帳就會自動記）</div>` : ''}
-      ${sum.pending.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.title)}</div><div class="muted small">${pendText(p, j.memberId, nameOf)}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
+      ${sum.pending.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.repaidLabel || p.title)}</div><div class="muted small">${pendText(p, j.memberId, nameOf)}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
       <div class="sec">跟我有關的支出</div>
       ${sum.related.length ? '' : `<div class="muted">還沒有跟你有關的支出。</div>`}
       ${sum.related.map(e => {
         const mine = e.shares[j.memberId] || 0;
         const who = e.payerId === j.memberId ? '我付' : `${esc(nameOf(e.payerId))} 付`;
-        return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(e.title)}</div>
+        return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(expTitleOf(e, repaid))}</div>
           <div class="muted small">${fmtMD(e.at)} · ${who} · ${methodLabel(e.method)} · ${Object.keys(e.shares).length === 1 && mine > 0 ? '只算我' : `我分 ${money(mine, cur)}`}</div></div>
           <div class="amt">${money(e.amount, cur)}</div></div>`;
       }).join('')}
@@ -572,24 +662,29 @@ async function viewCompanion(cloudId, tab) {
 
 /** SharedTripScreen pending row text. */
 function pendText(p, meId, nameOf) {
+  if (p.repaidLabel) return p.method === 'CASH' ? '現金 · 已還' : '轉帳 · 已還';
   const m = p.method === 'CASH' ? '現金' : '信用卡', forId = p.forId || p.memberId;
   if (p.memberId === meId && forId === meId) return `我付 · ${m} · 只算我`;
   if (p.memberId === meId) return `我幫${esc(nameOf(forId))}付 · ${m} · 算他的`;
   return `${esc(nameOf(p.memberId))} 幫我付 · 算我的，要還他`;
 }
-const pendTitle = (p, nameOf) => ((p.forId || p.memberId) !== p.memberId
+const pendTitle = (p, nameOf) => p.repaidLabel ? esc(p.repaidLabel) : ((p.forId || p.memberId) !== p.memberId
   ? `${esc(nameOf(p.memberId))} 幫 ${esc(nameOf(p.forId))} · ${esc(p.title)}` : `${esc(nameOf(p.memberId))} · ${esc(p.title)}`);
+const booksOf = S => resolve(S.expenses, pendingOf(S.inbox), repaidOf(S.items || []));
+const expTitleOf = (e, repaid) => { const r = (repaid || []).find(x => x.expenseId === e.id); return r ? repaidLine(r.payerName, r.forName, e.title) : e.title; };
 
 // ---------- read-only 分帳 (SettleScreen wording) ----------
 function splitHtml(S, meId) {
   const t = S.trip, cur = t.currency, ms = t.members, ownerName = t.ownerName || '主帳號';
   const nameOf = mid => ms.find(m => m.id === mid)?.name || '?';
   const you = mid => (mid === meId ? `${esc(nameOf(mid))}（我）` : esc(nameOf(mid)));
-  const tr = transfers(ms, S.expenses);
-  const total = S.expenses.reduce((s, e) => s + e.amount, 0);
-  const pend = pendingOf(S.inbox).slice().sort((a, b) => b.at - a.at);
-  const exps = S.expenses.slice().sort((a, b) => b.at - a.at);
-  const bal = balances(ms, S.expenses);
+  const repaid = repaidOf(S.items || []);
+  const books = booksOf(S);
+  const tr = transfers(ms, books.expenses);
+  const total = books.expenses.reduce((s, e) => s + e.amount, 0);
+  const pend = books.pending.slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+  const exps = books.expenses.slice().sort((a, b) => b.at - a.at);
+  const bal = balances(ms, books.expenses);
   return `
     <div class="hero"><div class="s">算清楚了！</div>
       <div class="big" style="font-size:24px">${tr.length ? `只要轉 ${tr.length} 筆就結清` : '沒有未結清的帳'}</div>
@@ -605,14 +700,14 @@ function splitHtml(S, meId) {
         <div class="muted small">付了 ${money(b.paid, cur)} · 分攤 ${money(b.share, cur)}</div></div>
         <div style="text-align:right"><div class="amt" style="color:${b.net > 0 ? 'var(--mintDeep)' : b.net < 0 ? 'var(--peachDeep)' : 'var(--inkSoft)'}">${b.net > 0 ? '要收 ' + money(b.net, cur) : b.net < 0 ? '要付 ' + money(-b.net, cur) : '剛好'}</div></div></div>`).join('')}
     ${pend.length ? `<div class="warn">等${esc(ownerName)}的手機記帳（打開旅伴帳就會自動記）</div>` : ''}
-    ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${pendTitle(p, nameOf)}</div><div class="muted small">${fmtMD(p.at)} · ${p.method === 'CASH' ? '現金' : '信用卡'} · 算${esc(nameOf(p.forId || p.memberId))}的</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
+    ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${pendTitle(p, nameOf)}</div><div class="muted small">${p.repaidLabel ? methodLabel(p.method) : `${fmtMD(p.at)} · ${p.method === 'CASH' ? '現金' : '信用卡'} · 算${esc(nameOf(p.forId || p.memberId))}的`}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
     <div class="sec">所有支出（${exps.length} 筆）</div>
     ${exps.length ? '' : `<div class="muted">還沒有支出。</div>`}
     ${exps.map(e => {
       const sh = Object.entries(e.shares).filter(([, c]) => c > 0);
       const parts = sh.map(([k, c]) => `${you(k)} ${money(c, cur)}`).join('、');
       const equal = sh.length > 0 && sh.every(([, c]) => Math.abs(c - sh[0][1]) <= 1);
-      return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(e.title)}</div>
+      return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(expTitleOf(e, repaid))}</div>
         <div class="muted small">${fmtMD(e.at)} · ${you(e.payerId)} 付 · ${methodLabel(e.method)}</div>
         ${parts ? `<div class="muted small">分：${parts}</div>` : ''}</div>
         <div style="text-align:right"><div class="amt">${money(e.amount, cur)}</div>${equal && sh.length > 1 ? `<div class="muted small">一人 ${money(Math.floor(e.amount / sh.length), cur)}</div>` : ''}</div></div>`;
@@ -720,10 +815,12 @@ async function viewOwnerTrip(id, tab) {
     const pb = pane.querySelector('#pb'); if (!pb || !S.trip) return;
     const t = S.trip, cur = t.currency, ms = t.members;
     const nameOf = mid => ms.find(m => m.id === mid)?.name || '?';
-    const pend = pendingOf(S.inbox);
-    const tr = transfers(ms, S.expenses);
-    const total = S.expenses.reduce((s, e) => s + e.amount, 0);
-    const exps = S.expenses.slice().sort((a, b) => b.at - a.at);
+    const repaid = repaidOf(S.items || []);
+    const books = booksOf(S);
+    const pend = books.pending;
+    const tr = transfers(ms, books.expenses);
+    const total = books.expenses.reduce((s, e) => s + e.amount, 0);
+    const exps = books.expenses.slice().sort((a, b) => b.at - a.at);
     pb.innerHTML = `
       <div class="note peach">✏️ 新增或修改支出、分帳、現金，請在 Android 主帳號手機上操作。這裡只能看。</div>
       <div class="hero"><div class="s">這趟總支出</div><div class="big">${money(total, cur)}</div>
@@ -731,7 +828,7 @@ async function viewOwnerTrip(id, tab) {
       </div>
       <div class="sec">每個人</div>
       ${ms.map(m => {
-        const s = summary(m.id, ms, S.expenses, pend);
+        const s = summary(m.id, ms, S.expenses, pendingOf(S.inbox), repaid);
         return `<div class="card row"><div class="grow"><div style="font-weight:900">${esc(m.name)}${m.owner ? ' 👑' : ''}</div>
           <div class="muted small">帶了 ${money(s.startCash, cur)} · 花了 ${money(s.spent, cur)}</div></div>
           <div style="text-align:right"><div class="lbl">剩餘現金</div><div class="amt">${money(s.remainingCash, cur)}</div></div></div>`;
@@ -742,7 +839,7 @@ async function viewOwnerTrip(id, tab) {
       ${exps.length ? '' : `<div class="muted">還沒有支出。</div>`}
       ${exps.map(e => {
         const parts = Object.entries(e.shares).filter(([, c]) => c > 0).map(([k, c]) => `${esc(nameOf(k))} ${money(c, cur)}`).join('、');
-        return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(e.title)}</div>
+        return `<div class="exp"><div class="grow"><div style="font-weight:700">${esc(expTitleOf(e, repaid))}</div>
           <div class="muted small">${fmtMD(e.at)} · ${esc(nameOf(e.payerId))} 付 · ${methodLabel(e.method)}</div>
           ${parts ? `<div class="muted small">分：${parts}</div>` : ''}</div><div class="amt">${money(e.amount, cur)}</div></div>`;
       }).join('')}`;

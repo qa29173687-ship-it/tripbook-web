@@ -56,3 +56,45 @@ console.log('balances test passed');
   assert.equal(isBought(parseItem('b', { done: false, helpers: { u2: { name: 'C', status: 'SEEN' } } })), false);
   console.log('helper-pays tests passed');
 }
+
+// v1.1.3 已當場還錢
+{
+  const { summary, transfers, resolve, repaidOf, repaidLine, repaidTag, parseItem } = await import('../logic.js');
+  const m2 = [{ id: '1', name: '宏威', start: 10000, cash: 9200, owner: true }, { id: '2', name: '小美', start: 5000, cash: 5000, owner: false }];
+  const e = { id: '9', title: '藥妝', amount: 800, payerId: '1', method: 'CASH', at: 0, shares: { '2': 800 } };
+  assert.deepEqual(transfers(m2, [e]), [{ fromId: '2', toId: '1', amount: 800 }]);
+  const repaidCash = [{ itemId: 'i', expenseId: '9', payerId: '1', payerName: '宏威', forId: '2', forName: '小美', title: '藥妝', amount: 800, originalMethod: 'CASH', repayMethod: 'CASH' }];
+  const s1 = summary('1', m2, [e], [], repaidCash), s2 = summary('2', m2, [e], [], repaidCash);
+  assert.equal(s1.remainingCash, 10000); assert.equal(s1.spent, 0); assert.equal(s1.transfers.length, 0);
+  assert.equal(s2.remainingCash, 4200); assert.equal(s2.spent, 800); assert.equal(s2.transfers.length, 0);
+  const books = resolve([e], [], repaidCash);
+  assert.equal(books.expenses[0].payerId, '2'); assert.equal(books.expenses[0].method, 'CASH');
+  assert.deepEqual(transfers(m2, books.expenses), []);
+  const repaidXfer = [{ ...repaidCash[0], repayMethod: 'TRANSFER' }];
+  const t1 = summary('1', m2, [e], [], repaidXfer), t2 = summary('2', m2, [e], [], repaidXfer);
+  assert.equal(t1.remainingCash, 9200); assert.equal(t2.remainingCash, 5000); assert.equal(t2.spent, 800);
+  assert.deepEqual(transfers(m2, resolve([e], [], repaidXfer).expenses), []);
+  // before ingest
+  const pre = [{ id: '1', name: '宏威', start: 10000, cash: 10000, owner: true }, { id: '2', name: '小美', start: 5000, cash: 5000, owner: false }];
+  const pend = [{ memberId: '1', title: '藥妝', amount: 800, method: 'CASH', at: 0, forId: '2', itemId: 'i' }];
+  const rPend = [{ itemId: 'i', expenseId: null, payerId: '1', payerName: '宏威', forId: '2', forName: '小美', title: '藥妝', amount: 800, originalMethod: 'CASH', repayMethod: 'CASH' }];
+  const p1 = summary('1', pre, [], pend, rPend), p2 = summary('2', pre, [], pend, rPend);
+  assert.equal(p1.remainingCash, 10000); assert.equal(p1.spent, 0);
+  assert.equal(p2.remainingCash, 4200); assert.equal(p2.spent, 800);
+  assert.equal(p2.pending[0].repaidLabel, '宏威 幫 小美 · 藥妝 · 已還');
+  const rPendX = [{ ...rPend[0], repayMethod: 'TRANSFER' }];
+  const x1 = summary('1', pre, [], pend, rPendX), x2 = summary('2', pre, [], pend, rPendX);
+  assert.equal(x1.remainingCash, 9200); assert.equal(x2.remainingCash, 5000); assert.equal(x2.spent, 800);
+  // card then cash repay
+  const cardMs = [{ id: '1', name: '宏威', start: 10000, cash: 10000, owner: true }, { id: '2', name: '小美', start: 5000, cash: 5000, owner: false }];
+  const cardE = { id: '9', title: '藥妝', amount: 800, payerId: '1', method: 'CARD', at: 0, shares: { '2': 800 } };
+  const rCard = [{ itemId: 'i', expenseId: '9', payerId: '1', payerName: '宏威', forId: '2', forName: '小美', title: '藥妝', amount: 800, originalMethod: 'CARD', repayMethod: 'CASH' }];
+  assert.equal(summary('1', cardMs, [cardE], [], rCard).remainingCash, 10800);
+  assert.equal(summary('2', cardMs, [cardE], [], rCard).remainingCash, 4200);
+  const it = parseItem('a', { name: '藥妝', qty: 1, memberId: '2', memberName: '小美', helpers: { u1: { name: '宏威', status: 'PAID', amount: 800, method: 'CASH', memberId: '1', repaid: true, repaidMethod: 'CASH' } } });
+  const ro = repaidOf([it]);
+  assert.equal(ro.length, 1); assert.equal(ro[0].repayMethod, 'CASH'); assert.equal(ro[0].forId, '2');
+  assert.equal(repaidLine('宏威', '小美', '藥妝'), '宏威 幫 小美 · 藥妝 · 已還');
+  assert.equal(repaidTag('CASH'), '已還 💵');
+  console.log('repay tests passed');
+}

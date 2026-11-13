@@ -47,25 +47,77 @@ export function transfers(members, expenses) {
 /** CPending: memberId = who paid; forId = whose item / whose share (defaults to memberId). */
 const forOf = p => p.forId || p.memberId;
 
+export const repaidTag = method => method === 'CASH' ? '已還 💵' : '已還（轉帳）';
+export const repaidLine = (payerName, forName, title) => `${payerName} 幫 ${forName} · ${title} · 已還`;
+
+/** CItem.paidBy / CItem.bought */
+export const paidBy = item => Object.values(item.helpers || {}).find(h => h.status === 'PAID') || null;
+export const isBought = item => item.done || paidBy(item) != null;
+
+/** Cloud.repaidOf — items whose helper-pay was marked 已當場還錢. */
+export function repaidOf(items) {
+  const out = [];
+  for (const it of items || []) {
+    const pb = paidBy(it);
+    if (!pb || !pb.repaid) continue;
+    out.push({
+      itemId: it.id, expenseId: it.expenseId || null, payerId: pb.memberId || '', payerName: pb.name || '',
+      forId: it.memberId, forName: it.memberName || '', title: expenseTitle(it.name, it.qty),
+      amount: pb.amount, originalMethod: pb.method || 'CASH', repayMethod: pb.repaidMethod || 'CASH',
+    });
+  }
+  return out;
+}
+
+/** SharedView.resolve — apply 已當場還錢 to expenses/pending/cash before the owner's phone ingests. */
+export function resolve(expenses, pending, repaid) {
+  if (!repaid || !repaid.length) return { expenses, pending, cashDelta: {} };
+  const repaidItemIds = new Set(repaid.map(r => r.itemId));
+  const cashDelta = {};
+  const add = (id, d) => { if (id && d) cashDelta[id] = (cashDelta[id] || 0) + d; };
+  const rewritten = expenses.map(e => {
+    const r = repaid.find(x => x.expenseId && x.expenseId === e.id);
+    return r ? { ...e, payerId: r.forId, method: r.repayMethod, shares: { [r.forId]: e.amount } } : e;
+  });
+  const keptPending = pending.filter(p => !p.itemId || !repaidItemIds.has(p.itemId));
+  const synthetic = [];
+  for (const r of repaid) {
+    const expExists = !!(r.expenseId && expenses.some(e => e.id === r.expenseId));
+    const label = repaidLine(r.payerName, r.forName, r.title);
+    if (expExists) {
+      if (r.repayMethod === 'CASH') { add(r.payerId, r.amount); add(r.forId, -r.amount); }
+    } else {
+      synthetic.push({ memberId: r.forId, title: r.title, amount: r.amount, method: r.repayMethod, at: 0, forId: r.forId, itemId: r.itemId, repaidLabel: label });
+      if (r.repayMethod === 'CASH') {
+        if (r.originalMethod !== 'CASH') add(r.payerId, r.amount);
+      } else if (r.originalMethod === 'CASH') {
+        add(r.payerId, -r.amount);
+      }
+    }
+  }
+  return { expenses: rewritten, pending: keptPending.concat(synthetic), cashDelta };
+}
+
 /** SharedView.summary — companion's read-only view. */
-export function summary(meId, members, expenses, pending) {
+export function summary(meId, members, expenses, pending, repaid = []) {
+  const books = resolve(expenses, pending, repaid);
   const me = members.find(m => m.id === meId);
-  const myPending = pending.filter(p => p.memberId === meId || forOf(p) === meId);
-  const pendingCash = pending.filter(p => p.memberId === meId && p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
-  const spent = expenses.reduce((s, e) => s + ((e.shares || {})[meId] || 0), 0) + pending.filter(p => forOf(p) === meId).reduce((s, p) => s + p.amount, 0);
+  const myPending = books.pending.filter(p => p.memberId === meId || forOf(p) === meId);
+  const pendingCash = books.pending.filter(p => p.memberId === meId && p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+  const spent = books.expenses.reduce((s, e) => s + ((e.shares || {})[meId] || 0), 0) + books.pending.filter(p => forOf(p) === meId).reduce((s, p) => s + p.amount, 0);
   return {
-    remainingCash: (me ? me.cash : 0) - pendingCash,
+    remainingCash: (me ? me.cash : 0) - pendingCash + (books.cashDelta[meId] || 0),
     startCash: me ? me.start : 0,
     spent,
-    transfers: transfers(members, expenses).filter(t => t.fromId === meId || t.toId === meId),
-    related: expenses.filter(e => e.payerId === meId || ((e.shares || {})[meId] || 0) > 0).slice().sort((a, b) => b.at - a.at),
+    transfers: transfers(members, books.expenses).filter(t => t.fromId === meId || t.toId === meId),
+    related: books.expenses.filter(e => e.payerId === meId || ((e.shares || {})[meId] || 0) > 0).slice().sort((a, b) => b.at - a.at),
     pending: myPending,
   };
 }
 
 /** Cloud.pendingOf */
 export function pendingOf(inbox) {
-  return inbox.filter(x => x.type === 'buy').map(x => ({ memberId: x.memberId, title: x.title, amount: x.amount, method: x.method, at: x.at, forId: x.forMemberId || x.memberId }));
+  return inbox.filter(x => x.type === 'buy').map(x => ({ memberId: x.memberId, title: x.title, amount: x.amount, method: x.method, at: x.at, forId: x.forMemberId || x.memberId, itemId: x.itemId || '' }));
 }
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -108,7 +160,7 @@ export function parseExpense(id, d) {
 }
 export function parseItem(id, d) {
   const helpers = {};
-  for (const [k, v] of Object.entries(d.helpers || {})) helpers[k] = { name: (v && v.name) || '', status: (v && v.status) || 'FIND', amount: num(v && v.amount), method: (v && v.method) || 'CASH', memberId: (v && v.memberId) || '' };
+  for (const [k, v] of Object.entries(d.helpers || {})) helpers[k] = { name: (v && v.name) || '', status: (v && v.status) || 'FIND', amount: num(v && v.amount), method: (v && v.method) || 'CASH', memberId: (v && v.memberId) || '', repaid: !!(v && v.repaid), repaidMethod: (v && v.repaidMethod) || '' };
   return {
     id, ownerUid: d.ownerUid || '', memberId: d.memberId || '', memberName: d.memberName || '', name: d.name || '',
     qty: d.qty == null ? 1 : num(d.qty), note: d.note || '', photo: d.photo ? d.photo : null, done: d.done === true,
@@ -135,7 +187,3 @@ export function balances(members, expenses) {
     return { id: m.id, name: m.name, owner: m.owner, paid, share, net: paid - share };
   });
 }
-
-/** CItem.paidBy / CItem.bought */
-export const paidBy = item => Object.values(item.helpers || {}).find(h => h.status === 'PAID') || null;
-export const isBought = item => item.done || paidBy(item) != null;
