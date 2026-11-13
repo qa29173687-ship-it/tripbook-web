@@ -11,7 +11,7 @@ import {
 import { firebaseConfig } from './config.js';
 import {
   summary, transfers, balances, pendingOf, displayCode, normalizeCode, itemName, expenseTitle, money,
-  parseTrip, parseExpense, parseItem, parseInbox, sortItems,
+  parseTrip, parseExpense, parseItem, parseInbox, sortItems, paidBy, isBought,
 } from './logic.js';
 
 // ---------- Firebase ----------
@@ -84,6 +84,25 @@ const Cloud = {
     await addDoc(sub(tripId, 'inbox'), {
       byUid: auth.currentUser.uid, memberId: item.memberId, memberName, itemId: item.id,
       type: 'unbuy', title: item.name, amount: 0, method: item.method, at: Date.now(),
+    });
+  },
+  /** Cloud.helperBuy: I pay for someone else's item; the Android 主帳號 phone records it as my expense shared only by them. */
+  helperBuy: async (tripId, item, myMemberId, myName, title, amount, method) => {
+    const uid = auth.currentUser.uid;
+    await updateDoc(doc(db, 'trips', tripId, 'shopping', item.id),
+      new FieldPath('helpers', uid), { name: myName, status: 'PAID', amount, method, memberId: myMemberId }, 'updatedAt', Date.now());
+    await addDoc(sub(tripId, 'inbox'), {
+      byUid: uid, memberId: myMemberId, memberName: myName, forMemberId: item.memberId,
+      itemId: item.id, type: 'buy', title, amount, method, at: Date.now(),
+    });
+  },
+  /** Cloud.helperUnbuy */
+  helperUnbuy: async (tripId, item, myMemberId, myName) => {
+    const uid = auth.currentUser.uid;
+    await updateDoc(doc(db, 'trips', tripId, 'shopping', item.id), new FieldPath('helpers', uid), deleteField(), 'updatedAt', Date.now());
+    await addDoc(sub(tripId, 'inbox'), {
+      byUid: uid, memberId: myMemberId, memberName: myName, forMemberId: item.memberId,
+      itemId: item.id, type: 'unbuy', title: item.name, amount: 0, method: 'CASH', at: Date.now(),
     });
   },
   lookupInvite: async code => {
@@ -323,21 +342,25 @@ function mountShopping(container, ctx) {
         rows += `<div class="sec">${own ? '我的清單' : `${esc(it.memberName)}的清單${ctx.canEditAll ? '' : '（只能看，可以幫找）'}`}</div>`;
       }
       const myHelp = uid ? it.helpers[uid]?.status : null;
-      const helpers = Object.entries(it.helpers).filter(([k]) => k !== uid).map(([, h]) =>
+      const bought = isBought(it), pb = paidBy(it);
+      const helpers = Object.entries(it.helpers).filter(([k, h]) => k !== uid && h.status !== 'PAID').map(([, h]) =>
         `<div class="helper">${h.status === 'SEEN' ? `👀 ${esc(h.name)} 看到了` : `🔍 ${esc(h.name)} 在幫找`}</div>`).join('');
       rows += `<div class="card item" data-edit="${esc(it.id)}">
-        <div class="check ${it.done ? 'done' : ''} ${own ? '' : 'dis'}" data-check="${esc(it.id)}">${it.done ? '✓' : ''}</div>
+        <div class="check ${bought ? 'done' : ''} ${own && !pb ? '' : 'dis'}" data-check="${esc(it.id)}">${bought ? '✓' : ''}</div>
         ${it.photo ? `<div class="thumb" data-photo="${esc(it.id)}" style="background-image:url(${imgSrc(it.photo)})"></div>` : ''}
         <div class="grow">
-          <div class="iname ${it.done ? 'done' : ''}">${esc(it.qty > 1 ? `${it.name} ×${it.qty}` : it.name)}</div>
+          <div class="iname ${bought ? 'done' : ''}">${esc(it.qty > 1 ? `${it.name} ×${it.qty}` : it.name)}</div>
           ${own ? '' : `<div class="muted small">${esc(it.memberName)} 要的</div>`}
           ${it.note.trim() ? `<div class="muted small">${esc(it.note)}</div>` : ''}
-          ${it.done && it.amount > 0 ? `<div class="paid">${it.method === 'CASH' ? `現金 ${money(it.amount, cur)}${own ? ' · 已扣剩餘現金' : ''}` : `信用卡 ${money(it.amount, cur)}`}</div>` : ''}
+          ${pb ? `<div class="paid">💰 ${myHelp === 'PAID' ? '我' : esc(pb.name)} 幫${own ? '你' : esc(it.memberName)}買了 ${money(pb.amount, cur)}（${pb.method === 'CASH' ? '現金' : '信用卡'}）· 分帳自動算</div>` : ''}
+          ${it.done && !pb && it.amount > 0 ? `<div class="paid">${it.method === 'CASH' ? `現金 ${money(it.amount, cur)}${own ? ' · 已扣剩餘現金' : ''}` : `信用卡 ${money(it.amount, cur)}`}</div>` : ''}
           ${helpers}
         </div>
-        ${!own && !it.done ? `<div class="tags">
+        ${!own && myHelp === 'PAID' ? `<div class="tags"><button class="tag" data-payfor="${esc(it.id)}">取消幫買</button></div>`
+        : !own && !bought ? `<div class="tags">
           <button class="tag ${myHelp === 'FIND' ? 'on' : ''}" data-help="FIND" data-id="${esc(it.id)}">我幫你找</button>
-          <button class="tag ${myHelp === 'SEEN' ? 'on' : ''}" data-help="SEEN" data-id="${esc(it.id)}">我看到了</button></div>` : ''}
+          <button class="tag ${myHelp === 'SEEN' ? 'on' : ''}" data-help="SEEN" data-id="${esc(it.id)}">我看到了</button>
+          <button class="tag" data-payfor="${esc(it.id)}">我幫你買</button></div>` : ''}
       </div>`;
     }
     list.innerHTML = `
@@ -363,8 +386,13 @@ function mountShopping(container, ctx) {
     }));
     list.querySelectorAll('[data-check]').forEach(el => (el.onclick = ev => {
       ev.stopPropagation(); const it = byId(el.dataset.check);
-      if (!it || it.memberId !== me.memberId || busy) return;
+      if (!it || it.memberId !== me.memberId || paidBy(it) || busy) return;
       if (it.done) confirmUntick(it); else boughtDialog(it, sum.remainingCash, cur);
+    }));
+    list.querySelectorAll('[data-payfor]').forEach(el => (el.onclick = ev => {
+      ev.stopPropagation(); const it = byId(el.dataset.payfor); if (!it || busy) return;
+      if (uid && it.helpers[uid]?.status === 'PAID') confirmHelperUntick(it, me);
+      else boughtDialog(it, sum.remainingCash, cur, it.memberName, (a, m) => Cloud.helperBuy(ctx.tripId, it, me.memberId, me.name, expenseTitle(it.name, it.qty), a, m));
     }));
     list.querySelectorAll('[data-edit]').forEach(el => (el.onclick = () => {
       const it = byId(el.dataset.edit); if (!it) return;
@@ -372,10 +400,11 @@ function mountShopping(container, ctx) {
     }));
   }
 
-  function boughtDialog(item, remaining, cur) {
+  function boughtDialog(item, remaining, cur, forName = null, onConfirm = null) {
     let method = 'CASH';
     openDialog(`<div class="sheet">
-      <h2>買到了！${esc(item.qty > 1 ? `${item.name} ×${item.qty}` : item.name)}</h2>
+      <h2>${forName != null ? `幫${esc(forName)}買到了！` : '買到了！'}${esc(item.qty > 1 ? `${item.name} ×${item.qty}` : item.name)}</h2>
+      ${forName != null ? `<div class="muted small">你先付，這筆算在${esc(forName)}身上，分帳會自動算他要還你</div>` : ''}
       ${item.photo ? `<div class="thumb" style="width:96px;height:96px;background-image:url(${imgSrc(item.photo)})"></div>` : ''}
       <div class="field"><span class="lbl">實付金額</span><input id="amt" type="number" inputmode="numeric" pattern="[0-9]*" min="1"></div>
       <div class="lbl">付款方式</div>
@@ -395,7 +424,16 @@ function mountShopping(container, ctx) {
       d.querySelectorAll('[data-m]').forEach(b => (b.onclick = () => { method = b.dataset.m; upd(); }));
       amt.oninput = upd; upd(); setTimeout(() => amt.focus(), 50);
       d.querySelector('#cancel').onclick = closeDialog;
-      ok.onclick = () => { const a = val(); if (a <= 0) return; closeDialog(); run(() => ctx.onBuy(item, a, method)); };
+      ok.onclick = () => { const a = val(); if (a <= 0) return; closeDialog(); run(() => (onConfirm ? onConfirm(a, method) : ctx.onBuy(item, a, method))); };
+    });
+  }
+
+  function confirmHelperUntick(item, me) {
+    openDialog(`<div class="sheet"><h2>取消幫買？</h2>
+      <div class="muted">會刪掉這筆幫${esc(item.memberName)}代墊的支出。</div>
+      <div class="btns"><button class="btn ghost" id="keep">保留</button><button class="btn peach" id="un">取消幫買</button></div></div>`, d => {
+      d.querySelector('#keep').onclick = closeDialog;
+      d.querySelector('#un').onclick = () => { closeDialog(); run(() => Cloud.helperUnbuy(ctx.tripId, item, me.memberId, me.name)); };
     });
   }
 
@@ -518,7 +556,7 @@ async function viewCompanion(cloudId, tab) {
         ${get.map(t => `<div class="s">${esc(nameOf(t.fromId))} 要給你 ${money(t.amount, cur)}</div>`).join('')}
       </div>
       ${sum.pending.length ? `<div class="warn">等${esc(ownerName)}的手機記帳（打開旅伴帳就會自動記）</div>` : ''}
-      ${sum.pending.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.title)}</div><div class="muted small">我付 · ${p.method === 'CASH' ? '現金' : '信用卡'} · 只算我</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
+      ${sum.pending.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.title)}</div><div class="muted small">${pendText(p, j.memberId, nameOf)}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
       <div class="sec">跟我有關的支出</div>
       ${sum.related.length ? '' : `<div class="muted">還沒有跟你有關的支出。</div>`}
       ${sum.related.map(e => {
@@ -531,6 +569,16 @@ async function viewCompanion(cloudId, tab) {
       <div class="muted" style="margin-top:6px">🔒 支出和分帳由${esc(ownerName)}（主帳號）管理，有問題請跟他說。</div>`;
   }
 }
+
+/** SharedTripScreen pending row text. */
+function pendText(p, meId, nameOf) {
+  const m = p.method === 'CASH' ? '現金' : '信用卡', forId = p.forId || p.memberId;
+  if (p.memberId === meId && forId === meId) return `我付 · ${m} · 只算我`;
+  if (p.memberId === meId) return `我幫${esc(nameOf(forId))}付 · ${m} · 算他的`;
+  return `${esc(nameOf(p.memberId))} 幫我付 · 算我的，要還他`;
+}
+const pendTitle = (p, nameOf) => ((p.forId || p.memberId) !== p.memberId
+  ? `${esc(nameOf(p.memberId))} 幫 ${esc(nameOf(p.forId))} · ${esc(p.title)}` : `${esc(nameOf(p.memberId))} · ${esc(p.title)}`);
 
 // ---------- read-only 分帳 (SettleScreen wording) ----------
 function splitHtml(S, meId) {
@@ -557,7 +605,7 @@ function splitHtml(S, meId) {
         <div class="muted small">付了 ${money(b.paid, cur)} · 分攤 ${money(b.share, cur)}</div></div>
         <div style="text-align:right"><div class="amt" style="color:${b.net > 0 ? 'var(--mintDeep)' : b.net < 0 ? 'var(--peachDeep)' : 'var(--inkSoft)'}">${b.net > 0 ? '要收 ' + money(b.net, cur) : b.net < 0 ? '要付 ' + money(-b.net, cur) : '剛好'}</div></div></div>`).join('')}
     ${pend.length ? `<div class="warn">等${esc(ownerName)}的手機記帳（打開旅伴帳就會自動記）</div>` : ''}
-    ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.title)}</div><div class="muted small">${fmtMD(p.at)} · ${you(p.memberId)} 付 · ${p.method === 'CASH' ? '現金' : '信用卡'} · 只算${esc(nameOf(p.memberId))}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
+    ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${pendTitle(p, nameOf)}</div><div class="muted small">${fmtMD(p.at)} · ${p.method === 'CASH' ? '現金' : '信用卡'} · 算${esc(nameOf(p.forId || p.memberId))}的</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
     <div class="sec">所有支出（${exps.length} 筆）</div>
     ${exps.length ? '' : `<div class="muted">還沒有支出。</div>`}
     ${exps.map(e => {
@@ -689,7 +737,7 @@ async function viewOwnerTrip(id, tab) {
           <div style="text-align:right"><div class="lbl">剩餘現金</div><div class="amt">${money(s.remainingCash, cur)}</div></div></div>`;
       }).join('')}
       ${pend.length ? `<div class="warn">等 Android 主帳號手機記帳（打開旅伴帳 App 就會自動記）</div>` : ''}
-      ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${esc(p.title)}</div><div class="muted small">${esc(nameOf(p.memberId))} 付 · ${p.method === 'CASH' ? '現金' : '信用卡'}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
+      ${pend.map(p => `<div class="exp pend"><div class="grow"><div style="font-weight:700">${pendTitle(p, nameOf)}</div><div class="muted small">${esc(nameOf(p.memberId))} 付 · ${p.method === 'CASH' ? '現金' : '信用卡'}</div></div><div class="amt">${money(p.amount, cur)}</div></div>`).join('')}
       <div class="sec">所有支出（${exps.length} 筆）</div>
       ${exps.length ? '' : `<div class="muted">還沒有支出。</div>`}
       ${exps.map(e => {

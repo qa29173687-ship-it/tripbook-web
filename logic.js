@@ -44,12 +44,15 @@ export function transfers(members, expenses) {
     .map(t => ({ fromId: back.get(t.from), toId: back.get(t.to), amount: t.amount }));
 }
 
+/** CPending: memberId = who paid; forId = whose item / whose share (defaults to memberId). */
+const forOf = p => p.forId || p.memberId;
+
 /** SharedView.summary — companion's read-only view. */
 export function summary(meId, members, expenses, pending) {
   const me = members.find(m => m.id === meId);
-  const myPending = pending.filter(p => p.memberId === meId);
-  const pendingCash = myPending.filter(p => p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
-  const spent = expenses.reduce((s, e) => s + ((e.shares || {})[meId] || 0), 0) + myPending.reduce((s, p) => s + p.amount, 0);
+  const myPending = pending.filter(p => p.memberId === meId || forOf(p) === meId);
+  const pendingCash = pending.filter(p => p.memberId === meId && p.method === 'CASH').reduce((s, p) => s + p.amount, 0);
+  const spent = expenses.reduce((s, e) => s + ((e.shares || {})[meId] || 0), 0) + pending.filter(p => forOf(p) === meId).reduce((s, p) => s + p.amount, 0);
   return {
     remainingCash: (me ? me.cash : 0) - pendingCash,
     startCash: me ? me.start : 0,
@@ -62,7 +65,7 @@ export function summary(meId, members, expenses, pending) {
 
 /** Cloud.pendingOf */
 export function pendingOf(inbox) {
-  return inbox.filter(x => x.type === 'buy').map(x => ({ memberId: x.memberId, title: x.title, amount: x.amount, method: x.method, at: x.at }));
+  return inbox.filter(x => x.type === 'buy').map(x => ({ memberId: x.memberId, title: x.title, amount: x.amount, method: x.method, at: x.at, forId: x.forMemberId || x.memberId }));
 }
 
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -105,7 +108,7 @@ export function parseExpense(id, d) {
 }
 export function parseItem(id, d) {
   const helpers = {};
-  for (const [k, v] of Object.entries(d.helpers || {})) helpers[k] = { name: (v && v.name) || '', status: (v && v.status) || 'FIND' };
+  for (const [k, v] of Object.entries(d.helpers || {})) helpers[k] = { name: (v && v.name) || '', status: (v && v.status) || 'FIND', amount: num(v && v.amount), method: (v && v.method) || 'CASH', memberId: (v && v.memberId) || '' };
   return {
     id, ownerUid: d.ownerUid || '', memberId: d.memberId || '', memberName: d.memberName || '', name: d.name || '',
     qty: d.qty == null ? 1 : num(d.qty), note: d.note || '', photo: d.photo ? d.photo : null, done: d.done === true,
@@ -113,7 +116,7 @@ export function parseItem(id, d) {
   };
 }
 export function parseInbox(id, d) {
-  return { id, byUid: d.byUid || '', memberId: d.memberId || '', memberName: d.memberName || '', itemId: d.itemId || '', type: d.type || 'buy', title: d.title || '', amount: num(d.amount), method: d.method || 'CASH', at: num(d.at) };
+  return { id, byUid: d.byUid || '', memberId: d.memberId || '', forMemberId: d.forMemberId || d.memberId || '', memberName: d.memberName || '', itemId: d.itemId || '', type: d.type || 'buy', title: d.title || '', amount: num(d.amount), method: d.method || 'CASH', at: num(d.at) };
 }
 
 /** SharedShoppingPane sort: mine first, then memberName, undone first, createdAt. */
@@ -132,3 +135,7 @@ export function balances(members, expenses) {
     return { id: m.id, name: m.name, owner: m.owner, paid, share, net: paid - share };
   });
 }
+
+/** CItem.paidBy / CItem.bought */
+export const paidBy = item => Object.values(item.helpers || {}).find(h => h.status === 'PAID') || null;
+export const isBought = item => item.done || paidBy(item) != null;

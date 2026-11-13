@@ -41,3 +41,18 @@ console.log('logic tests: all passed (remaining 27900, spent 5800, owes 3700)');
 import { balances } from '../logic.js';
 assert.deepEqual(balances(ms, es).map(b => [b.id, b.paid, b.share, b.net]), [['1', 3600, 3700, -100], ['2', 1600, 5300, -3700], ['3', 7500, 3700, 3800]]);
 console.log('balances test passed');
+// v1.1.2 helper-pays (我幫你買)
+{
+  const { summary, transfers, pendingOf, paidBy, isBought, parseInbox, parseItem } = await import('../logic.js');
+  const m2 = [{ id: '1', name: 'A', start: 1000, cash: 1000, owner: true }, { id: '2', name: 'B', start: 1000, cash: 1000, owner: false }];
+  const pp = [{ memberId: '1', title: 'x', amount: 800, method: 'CASH', at: 1, forId: '2' }];
+  const s1 = summary('1', m2, [], pp), s2 = summary('2', m2, [], pp);
+  assert.equal(s1.remainingCash, 1000 - 800); assert.equal(s1.spent, 0); assert.equal(s1.pending.length, 1);
+  assert.equal(s2.remainingCash, 1000); assert.equal(s2.spent, 800); assert.equal(s2.pending.length, 1);
+  assert.deepEqual(transfers(m2, [{ id: 'e', title: 'x', amount: 800, payerId: '1', method: 'CASH', at: 1, shares: { '2': 800 } }]), [{ fromId: '2', toId: '1', amount: 800 }]);
+  assert.deepEqual(pendingOf([parseInbox('i', { memberId: '1', forMemberId: '2', type: 'buy', amount: 800, method: 'CASH', title: 'x', at: 1 }), parseInbox('j', { memberId: '3', type: 'buy', amount: 5 })]).map(p => p.forId), ['2', '3']);
+  const it = parseItem('a', { done: false, helpers: { u1: { name: 'A', status: 'PAID', amount: 800, method: 'CASH', memberId: '1' }, u2: { name: 'C', status: 'FIND' } } });
+  assert.equal(paidBy(it).amount, 800); assert.equal(isBought(it), true);
+  assert.equal(isBought(parseItem('b', { done: false, helpers: { u2: { name: 'C', status: 'SEEN' } } })), false);
+  console.log('helper-pays tests passed');
+}
