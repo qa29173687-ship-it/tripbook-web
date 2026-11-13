@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { summary, transfers, displayCode, normalizeCode, newInviteCode, expenseTitle, itemName, money, pendingOf, sortItems } from '../logic.js';
+
+const ms = [
+  { id: '1', name: '宏威', start: 50000, cash: 47000, owner: true },
+  { id: '2', name: '小美', start: 30000, cash: 28400, owner: false },
+  { id: '3', name: '阿明', start: 30000, cash: 27500, owner: false },
+];
+const es = [
+  { id: 'a', title: 'EVE ×2', amount: 1600, payerId: '2', method: 'CASH', at: 3, shares: { '2': 1600 } },
+  { id: 'b', title: '一蘭拉麵', amount: 3600, payerId: '1', method: 'CASH', at: 2, shares: { '1': 1200, '2': 1200, '3': 1200 } },
+  { id: 'c', title: 'Skyliner', amount: 7500, payerId: '3', method: 'CASH', at: 1, shares: { '1': 2500, '2': 2500, '3': 2500 } },
+];
+const pend = [{ memberId: '2', title: '抹茶粉', amount: 500, method: 'CASH', at: 4 }, { memberId: '3', title: 'x', amount: 100, method: 'CASH', at: 5 }];
+const s = summary('2', ms, es, pend);
+assert.equal(s.remainingCash, 27900);
+assert.equal(s.spent, 1600 + 1200 + 2500 + 500);
+assert.equal(s.spent, 5800);
+assert.equal(s.related.length, 3);
+assert.deepEqual(s.related.map(e => e.id), ['a', 'b', 'c']);
+assert.equal(s.pending.length, 1);
+assert.equal(s.transfers.filter(t => t.fromId === '2').reduce((a, t) => a + t.amount, 0), 3700);
+assert.equal(displayCode('ABCDEF'), 'ABCD-EF');
+assert.equal(normalizeCode('abcd-ef '), 'ABCDEF');
+assert.equal(newInviteCode().length, 6);
+// transfers all members: nets 1: 3600-3700=-100, 2: 1600-5300=-3700, 3: 7500-3700=+3800
+assert.deepEqual(transfers(ms, es), [{ fromId: '2', toId: '3', amount: 3700 }, { fromId: '1', toId: '3', amount: 100 }]);
+assert.equal(expenseTitle('  ', 1), '購物');
+assert.equal(expenseTitle('抹茶粉', 3), '抹茶粉 ×3');
+assert.equal(itemName('', true), '照片裡的東西');
+assert.equal(itemName('', false), '要買的東西');
+assert.equal(money(12345), 'NT$12,345');
+assert.equal(money(500, 'JPY'), '¥500');
+assert.equal(pendingOf([{ type: 'unbuy', memberId: '2', amount: 0 }, { type: 'buy', memberId: '2', title: 't', amount: 5, method: 'CASH', at: 1 }]).length, 1);
+assert.deepEqual(sortItems([
+  { id: 'x', memberId: '3', memberName: '阿明', done: false, createdAt: 1 },
+  { id: 'y', memberId: '2', memberName: '小美', done: true, createdAt: 1 },
+  { id: 'z', memberId: '2', memberName: '小美', done: false, createdAt: 2 },
+], '2').map(i => i.id), ['z', 'y', 'x']);
+console.log('logic tests: all passed (remaining 27900, spent 5800, owes 3700)');
