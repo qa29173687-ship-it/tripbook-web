@@ -123,3 +123,12 @@ export function sortItems(items, myMemberId) {
     (a.memberName < b.memberName ? -1 : a.memberName > b.memberName ? 1 : 0) ||
     (a.done - b.done) || (a.createdAt - b.createdAt));
 }
+
+/** Per-member totals for 總消費明細: paid, share (own portion), net (+ should receive, − owes). */
+export function balances(members, expenses) {
+  return members.map(m => {
+    const paid = expenses.filter(e => e.payerId === m.id).reduce((s, e) => s + e.amount, 0);
+    const share = expenses.reduce((s, e) => s + ((e.shares || {})[m.id] || 0), 0);
+    return { id: m.id, name: m.name, owner: m.owner, paid, share, net: paid - share };
+  });
+}

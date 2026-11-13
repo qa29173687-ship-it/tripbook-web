@@ -38,3 +38,6 @@ assert.deepEqual(sortItems([
   { id: 'z', memberId: '2', memberName: '小美', done: false, createdAt: 2 },
 ], '2').map(i => i.id), ['z', 'y', 'x']);
 console.log('logic tests: all passed (remaining 27900, spent 5800, owes 3700)');
+import { balances } from '../logic.js';
+assert.deepEqual(balances(ms, es).map(b => [b.id, b.paid, b.share, b.net]), [['1', 3600, 3700, -100], ['2', 1600, 5300, -3700], ['3', 7500, 3700, 3800]]);
+console.log('balances test passed');

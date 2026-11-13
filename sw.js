@@ -1,5 +1,5 @@
 // 旅伴帳 service worker: app shell network-first (always fresh when online), Firebase SDK cache-first.
-const CACHE = 'tripbook-web-v1';
+const CACHE = 'tripbook-web-v2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './logic.js', './config.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
