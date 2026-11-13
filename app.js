@@ -185,6 +185,14 @@ function openDialog(html, bind) {
   bind && bind($dlg);
 }
 function closeDialog() { $dlg.classList.add('hidden'); $dlg.innerHTML = ''; }
+function confirmRemoveJoined(id, name) {
+  openDialog(`<div class="sheet"><h2>刪除這趟旅行${name ? `「${esc(name)}」` : ''}？</h2>
+    <div class="muted">確定要從你的清單刪除這趟旅行？不會影響主帳號和其他旅伴的資料，之後可用邀請碼重新加入。</div>
+    <div class="btns"><button class="btn ghost" id="keep">保留</button><button class="btn peach" id="un">刪除這趟旅行</button></div></div>`, d => {
+    d.querySelector('#keep').onclick = closeDialog;
+    d.querySelector('#un').onclick = () => { closeDialog(); removeJoined(id); toast('已從清單刪除'); if (location.hash === '#/' || location.hash === '' || location.hash === '#') route(); else go('#/'); };
+  });
+}
 function viewPhoto(b64) {
   openDialog(`<div class="viewer"><img src="${imgSrc(b64)}" alt="商品照片"><div>點一下關閉</div></div>`, d => { d.querySelector('.viewer').onclick = closeDialog; });
 }
@@ -228,6 +236,7 @@ async function viewHome() {
       ${js.length ? js.map(j => `
         <div class="card tap row" data-go="#/t/${encodeURIComponent(j.cloudId)}">
           <div class="grow"><div class="iname">${esc(j.tripName || '共享旅程')}</div><div class="muted small">我是${esc(j.memberName)}</div></div>
+          <button class="icon-del" data-rm="${esc(j.cloudId)}" data-name="${esc(j.tripName || '共享旅程')}" aria-label="刪除這趟旅行">🗑</button>
           <span class="chip">打開 ›</span>
         </div>`).join('') : `<div class="muted">還沒有加入旅程。拿到主帳號給的邀請碼後按下面加入。</div>`}
       <a class="btn" href="#/join">＋ 輸入邀請碼加入</a>
@@ -235,6 +244,10 @@ async function viewHome() {
       <div class="card" id="ownerBox"><div class="muted">讀取中…</div></div>
     </div>`;
   $app.querySelectorAll('[data-go]').forEach(el => (el.onclick = () => go(el.dataset.go)));
+  $app.querySelectorAll('[data-rm]').forEach(el => (el.onclick = ev => {
+    ev.stopPropagation(); ev.preventDefault();
+    confirmRemoveJoined(el.dataset.rm, el.dataset.name);
+  }));
   const g = gen;
   await authReady;
   if (g !== gen) return;
@@ -584,7 +597,7 @@ function deniedView(msg, tripId) {
   $app.innerHTML = `<div class="top"><button class="back" onclick="location.hash='#/'">‹</button><div class="t"><h1>旅伴帳</h1></div></div>
     <div class="body"><div class="card">${esc(msg)}</div>
     ${tripId ? `<a class="btn" href="#/join">重新輸入邀請碼加入</a><button class="link red" id="rm">從清單移除這趟</button>` : `<a class="btn" href="#/">回首頁</a>`}</div>`;
-  const rm = $app.querySelector('#rm'); if (rm) rm.onclick = () => { removeJoined(tripId); go('#/'); };
+  const rm = $app.querySelector('#rm'); if (rm) rm.onclick = () => confirmRemoveJoined(tripId, '');
 }
 
 // ---------- Companion trip (SharedTripScreen) ----------
