@@ -12,7 +12,7 @@ import { firebaseConfig } from './config.js';
 import {
   summary, transfers, balances, pendingOf, displayCode, normalizeCode, itemName, expenseTitle, money,
   parseTrip, parseExpense, parseItem, parseInbox, sortItems, paidBy, isBought,
-  resolve, repaidOf, repaidTag, repaidLine,
+  resolve, repaidOf, repaidTag, repaidLine, joinUrl, inviteShareText,
 } from './logic.js';
 
 // ---------- Firebase ----------
@@ -287,17 +287,7 @@ async function viewJoin(prefill) {
     const input = jb.querySelector('#code');
     input.oninput = () => { const p = input.selectionStart; input.value = input.value.toUpperCase(); input.setSelectionRange(p, p); };
     input.onkeydown = e => { if (e.key === 'Enter') jb.querySelector('#next').click(); };
-    jb.querySelector('#next').onclick = async e => {
-      const c = normalizeCode(input.value);
-      if (c.length !== 6 || busy) { if (!busy) step1('邀請碼是 6 個英文或數字'); return; }
-      busy = true; e.target.textContent = '查詢中…'; e.target.disabled = true;
-      try {
-        await ensureSignedIn();
-        const t = await Cloud.lookupInvite(c);
-        busy = false;
-        if (!t) { prefill = c; step1('找不到這個邀請碼，請再確認一次'); } else step2(t);
-      } catch (err) { console.warn(err); busy = false; prefill = c; step1('連不上網路，請再試一次'); }
-    };
+    jb.querySelector('#next').onclick = () => lookup(input.value, jb.querySelector('#next'));
   };
   const step2 = (t, err = '') => {
     const ms = t.members.filter(m => !m.owner);
@@ -320,7 +310,26 @@ async function viewJoin(prefill) {
       } catch (e) { console.warn(e); busy = false; step2(t, '加入失敗，請再試一次'); }
     }));
   };
-  step1();
+  const lookup = async (raw, btn) => {
+    const c = normalizeCode(raw || '');
+    if (c.length !== 6 || busy) { if (!busy) step1(raw ? '邀請碼是 6 個英文或數字' : ''); return; }
+    prefill = c;
+    if (!jb.querySelector('#code')) step1();
+    busy = true;
+    if (btn) { btn.textContent = '查詢中…'; btn.disabled = true; }
+    else { const n = jb.querySelector('#next'); if (n) { n.textContent = '查詢中…'; n.disabled = true; } }
+    try {
+      await ensureSignedIn();
+      const t = await Cloud.lookupInvite(c);
+      busy = false;
+      if (!t) { step1('找不到這個邀請碼，請再確認一次'); return; }
+      const already = joined().find(j => j.cloudId === t.id);
+      if (already) go(`#/t/${encodeURIComponent(t.id)}`);
+      else step2(t);
+    } catch (err) { console.warn(err); busy = false; step1('連不上網路，請再試一次'); }
+  };
+  if (normalizeCode(prefill).length === 6) lookup(prefill);
+  else step1();
 }
 
 // ---------- live data for a trip ----------
@@ -799,15 +808,15 @@ async function viewOwnerTrip(id, tab) {
   function renderInvite() {
     const pb = pane.querySelector('#pb'); if (!pb || !S.trip) return;
     const t = S.trip, code = displayCode(t.inviteCode);
-    const link = `${location.origin}${location.pathname}#/join/${t.inviteCode}`;
-    const shareText = `一起用旅伴帳記「${t.name}」！打開旅伴帳 → 加入旅伴的旅程 → 輸入邀請碼 ${code}\niPhone 可以用網頁版：${link}`;
+    const shareText = inviteShareText(t.name, t.inviteCode);
     pb.innerHTML = `
       <div class="card">
         <div class="lbl">邀請碼</div>
         <div class="code">${esc(code || '—')}</div>
-        <div class="btns"><button class="btn ghost" id="copy">複製邀請碼</button><button class="btn" id="share">傳給旅伴</button></div>
+        ${t.inviteCode ? `<div class="muted small" style="word-break:break-all">${esc(joinUrl(t.inviteCode))}</div>` : ''}
+        <div class="btns"><button class="btn ghost" id="copy">複製邀請</button><button class="btn" id="share">傳給旅伴</button></div>
       </div>
-      <div class="muted">旅伴輸入邀請碼就能加入，不用登入。Android 旅伴用 App；iPhone 旅伴用 Safari 打開網頁版並「加入主畫面」。</div>
+      <div class="muted">把邀請傳給旅伴，裡面有加入網址。不用登入。iPhone 建議用 Safari 打開連結並「加入主畫面」；Android 也可以用旅伴帳 App 輸入邀請碼。</div>
       <div class="sec">誰加入了</div>
       ${t.members.map(m => {
         const ok = S.joins.some(j => j.memberId === m.id);
@@ -816,7 +825,7 @@ async function viewOwnerTrip(id, tab) {
       }).join('')}
       <div class="note">旅伴買到東西打勾後，你的 Android 手機打開旅伴帳就會自動記成一筆支出（付款人是他），你之後可以修改。</div>`;
     pb.querySelector('#copy').onclick = async () => {
-      try { await navigator.clipboard.writeText(code); toast('已複製邀請碼'); } catch { prompt('複製這個邀請碼', code); }
+      try { await navigator.clipboard.writeText(shareText); toast('已複製邀請訊息，貼到 LINE 就行'); } catch { prompt('複製這段訊息', shareText); }
     };
     pb.querySelector('#share').onclick = async () => {
       if (navigator.share) { try { await navigator.share({ title: '旅伴帳邀請', text: shareText }); } catch { } }

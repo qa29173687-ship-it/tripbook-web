@@ -98,3 +98,21 @@ console.log('balances test passed');
   assert.equal(repaidTag('CASH'), '已還 💵');
   console.log('repay tests passed');
 }
+
+{
+  const { joinUrl, inviteShareText, displayCode, normalizeCode } = await import('../logic.js');
+  assert.equal(joinUrl('abcd-ef'), 'https://qa29173687-ship-it.github.io/tripbook-web/#/join/ABCDEF');
+  assert.equal(joinUrl('8K3QTR'), 'https://qa29173687-ship-it.github.io/tripbook-web/#/join/8K3QTR');
+  assert.equal(normalizeCode('8k3q-tr '), '8K3QTR');
+  const t = inviteShareText('東京三日遊', 'abcdef');
+  assert.ok(t.includes('https://qa29173687-ship-it.github.io/tripbook-web/#/join/ABCDEF'));
+  assert.ok(t.includes('邀請碼 ABCD-EF'));
+  assert.ok(t.startsWith('一起用旅伴帳記「東京三日遊」！'));
+  assert.ok(t.includes('點這裡加入：'));
+  assert.ok(t.includes('iPhone 建議用 Safari 開'));
+  assert.ok(t.includes('Android 也可以用旅伴帳 App 輸入邀請碼'));
+  const plain = inviteShareText('', '8K3QTR');
+  assert.ok(plain.startsWith('一起用旅伴帳記帳！'));
+  assert.equal(displayCode('8K3QTR'), '8K3Q-TR');
+  console.log('invite share text tests passed');
+}

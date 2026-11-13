@@ -128,6 +128,16 @@ export function newInviteCode() {
 export const displayCode = code => code.length === 6 ? code.slice(0, 4) + '-' + code.slice(4) : code;
 export const normalizeCode = input => [...input.toUpperCase()].filter(ch => /[\p{L}\p{N}]/u.test(ch)).join('');
 
+export const WEB_JOIN_BASE = 'https://qa29173687-ship-it.github.io/tripbook-web/';
+export const joinUrl = code => `${WEB_JOIN_BASE}#/join/${normalizeCode(code)}`;
+export function inviteShareText(tripName, code) {
+  const raw = normalizeCode(code);
+  const shown = displayCode(raw);
+  const lead = tripName && tripName.trim() ? `一起用旅伴帳記「${tripName.trim()}」！` : '一起用旅伴帳記帳！';
+  return `${lead}點這裡加入：${joinUrl(raw)}（邀請碼 ${shown}）。iPhone 建議用 Safari 開，先按分享→加入主畫面，再從主畫面圖示打開。Android 也可以用旅伴帳 App 輸入邀請碼。`;
+}
+
+
 /** ShoppingText */
 export function itemName(name, hasPhoto) { const n = name.trim(); return n || (hasPhoto ? '照片裡的東西' : '要買的東西'); }
 export function expenseTitle(name, qty) { const n = name.trim() || '購物'; return qty > 1 ? `${n} ×${qty}` : n; }
